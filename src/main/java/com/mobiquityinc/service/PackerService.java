@@ -25,6 +25,12 @@ public class PackerService implements IPackerService {
 
     private final static Logger logger = Logger.getLogger(PackerService.class);
 
+    /**
+     * Filter and validate the list of package items by the package weight limit and cost
+     *
+     * @param inputFilePath
+     * @return @{@link String} The index list of the packages
+     */
     @Override
     public String pack(String inputFilePath) {
 
@@ -84,8 +90,12 @@ public class PackerService implements IPackerService {
         return packages;
     }
 
+    /**
+     * Process all lines in the input file, and parses it to the model @{@link Package}
+     */
     private Function<String, Package> processPackages = (line) -> {
 
+        //REGEX responsible for retrieve the maxWeight in the line
         String maxWeight = groupMatcher("(^\\d+)\\s*:", line);
 
         if (maxWeight != null) {
@@ -95,6 +105,7 @@ public class PackerService implements IPackerService {
             aPackage.setMaxWeight(new BigDecimal(maxWeight));
             aPackage.setItems(new ArrayList<PackageItem>());
 
+            //REGEX responsible for retrieve all package items available in the line
             List<String> packageItemsStr = groupsMatcher("(\\d{1,10},\\d{1,10}\\.?\\d{0,10},.{1}\\d{1,10}\\.?\\d{0,10})", line);
 
             if (packageItemsStr != null) {
@@ -136,6 +147,13 @@ public class PackerService implements IPackerService {
         return null;
     };
 
+    /**
+     * Matches all groups in the given input against a REGEX pattern.
+     *
+     * @param regex
+     * @param value
+     * @return @{@link List<String>} REGEX groups matched for this pattern
+     */
     private List<String> groupsMatcher(String regex, String value) {
 
         List<String> matches = new ArrayList<>();
@@ -155,6 +173,13 @@ public class PackerService implements IPackerService {
         return matches;
     }
 
+    /**
+     * Matches the given input against a REGEX pattern.
+     *
+     * @param regex
+     * @param value
+     * @return @{@link String} REGEX group matched for this pattern
+     */
     private String groupMatcher(String regex, String value) {
 
         Pattern pattern = Pattern.compile(regex);
