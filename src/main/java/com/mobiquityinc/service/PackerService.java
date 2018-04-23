@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -24,6 +25,19 @@ import java.util.stream.Collectors;
 public class PackerService implements IPackerService {
 
     private final static Logger logger = Logger.getLogger(PackerService.class);
+
+    private static Properties properties;
+
+    static{
+        InputStream is = null;
+        try {
+            properties = new Properties();
+            is = ClassLoader.class.getResourceAsStream("/packer.properties");
+            properties.load(is);
+        } catch (IOException e) {
+            throw new APIException("Error loading properties file");
+        }
+    }
 
     /**
      * Filter and validate the list of package items by the package weight limit and cost
@@ -96,7 +110,7 @@ public class PackerService implements IPackerService {
     private Function<String, Package> processPackages = (line) -> {
 
         //REGEX responsible for retrieve the maxWeight in the line
-        String maxWeight = groupMatcher("(^\\d+)\\s*:", line);
+        String maxWeight = groupMatcher(properties.getProperty("maxWeightRegexPattern"), line);
 
         if (maxWeight != null) {
 
@@ -106,7 +120,7 @@ public class PackerService implements IPackerService {
             aPackage.setItems(new ArrayList<PackageItem>());
 
             //REGEX responsible for retrieve all package items available in the line
-            List<String> packageItemsStr = groupsMatcher("(\\d{1,10},\\d{1,10}\\.?\\d{0,10},.{1}\\d{1,10}\\.?\\d{0,10})", line);
+            List<String> packageItemsStr = groupsMatcher(properties.getProperty("packageItemsRegexPattern"), line);
 
             if (packageItemsStr != null) {
 
@@ -116,17 +130,17 @@ public class PackerService implements IPackerService {
 
                     Integer itemIndex = Integer.valueOf(packageItemsDetails[0] != null ? packageItemsDetails[0] : "-1");
                     BigDecimal itemWeight = new BigDecimal(packageItemsDetails[1] != null ? packageItemsDetails[1] : "-1");
-                    BigDecimal itemCost = new BigDecimal(packageItemsDetails[2] != null ? packageItemsDetails[2].replaceAll("^\\D{1}", "") : "-1");
+                    BigDecimal itemCost = new BigDecimal(packageItemsDetails[2] != null ? packageItemsDetails[2].replaceAll(properties.getProperty("currencySymbolRegexPattern"), "") : "-1");
 
                     if (itemIndex == -1 || itemWeight.compareTo(new BigDecimal("-1")) == 0 || itemCost.compareTo(new BigDecimal("-1")) == 0) {
 
                         throw new APIException("Invalid item: " + packageItemsDetails);
 
-                    } if (itemWeight.compareTo(new BigDecimal("100")) == 1) {
+                    } if (itemWeight.compareTo(new BigDecimal(String.valueOf(properties.get("maxPackageWeightPermitted")))) == 1) {
 
                         throw new APIException("Invalid weight item: " + itemWeight + " at line [" + line + "]");
 
-                    } if (itemCost.compareTo(new BigDecimal("100")) == 1) {
+                    } if (itemCost.compareTo(new BigDecimal(String.valueOf(properties.get("maxPackageCostPermitted")))) == 1) {
 
                         throw new APIException("Invalid cost item: " + itemCost + " at line [" + line + "]");
 
@@ -165,7 +179,7 @@ public class PackerService implements IPackerService {
 
             matchCounter++;
 
-            if (matchCounter > 15){
+            if (matchCounter > Integer.valueOf(properties.getProperty("maxNumberOfPackageItems"))){
                 throw new APIException("Number of package items exceeded: " + matchCounter);
             }
             matches.add(matcher.group());
