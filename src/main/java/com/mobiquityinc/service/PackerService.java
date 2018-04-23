@@ -8,13 +8,14 @@ import org.apache.log4j.Logger;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,27 +26,65 @@ public class PackerService implements IPackerService {
     private final static Logger logger = Logger.getLogger(PackerService.class);
 
     @Override
-    public List<Package> loadInputFile(String filePath) throws APIException {
+    public String pack(String inputFilePath) {
+
+        if (inputFilePath == null){
+            throw new APIException("Input file path is mandatory");
+        }
+
+        List<Package> packages = loadInputFile(inputFilePath);
+
+        AtomicReference<String> packageResultIndex = new AtomicReference<>("");
+
+        packages.forEach(_package -> _package.getItems().sort(Comparator.comparing(PackageItem::getCost).reversed().thenComparing(PackageItem::getWeight)));
+
+        logger.debug("packages sorted: " + packages);
+
+        packages.forEach(_package -> {
+
+            BigDecimal maxWeight = _package.getMaxWeight();
+            AtomicReference<BigDecimal> packageWeight = new AtomicReference<>(new BigDecimal("0"));
+            AtomicReference<String> packageItemsResult = new AtomicReference<>("");
+            _package.getItems().forEach(item ->{
+
+                if (item.getWeight().compareTo(maxWeight) == -1 && packageWeight.get().compareTo(maxWeight) == -1){
+
+                    packageWeight.getAndSet(packageWeight.get().add(item.getWeight()));
+
+                    if (packageWeight.get().compareTo(maxWeight) == -1){
+
+                        packageItemsResult.getAndSet(packageItemsResult.get().isEmpty() ? packageItemsResult.get() + item.getIndex()
+                                :  packageItemsResult.get() + "," + item.getIndex());
+
+                    } else {
+                        packageWeight.getAndSet(packageWeight.get().subtract(item.getWeight()));
+                    }
+                }
+            });
+            packageResultIndex.getAndSet(packageResultIndex.get() + (packageItemsResult.get().isEmpty() ? "-" + System.lineSeparator()
+                    : packageItemsResult.get() + System.lineSeparator()));
+        });
+
+        return packageResultIndex.get();
+    }
+
+    @Override
+    public List<Package> loadInputFile(String filePath) {
 
         List<Package> packages;
         try {
             File inputFile = new File(filePath);
             InputStream fileInputStream = new FileInputStream(inputFile);
             BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(fileInputStream));
-            packages = bufferedReader.lines().map(mapToItem).collect(Collectors.toList());
-            System.out.println(packages);
+            packages = bufferedReader.lines().map(processPackages).collect(Collectors.toList());
             bufferedReader.close();
-        } catch (FileNotFoundException e) {
-            throw new APIException("File [" + filePath + "] Not Found");
         } catch (IOException e) {
-            throw new APIException("Error processing file " + filePath);
-        } catch (Exception e){
-            throw new APIException("Error loading Input File", e);
+            throw new APIException("Error processing input file: " + e.getMessage());
         }
         return packages;
     }
 
-    private Function<String, Package> mapToItem = (line) -> {
+    private Function<String, Package> processPackages = (line) -> {
 
         String maxWeight = groupMatcher("(^\\d+)\\s*:", line);
 
@@ -56,28 +95,43 @@ public class PackerService implements IPackerService {
             aPackage.setMaxWeight(new BigDecimal(maxWeight));
             aPackage.setItems(new ArrayList<PackageItem>());
 
-            List<String> packageItemsStr = groupsMatcher("(\\d{1,10},\\d{1,10}\\.\\d{1,10},.{1}\\d{1,10})", line);
+            List<String> packageItemsStr = groupsMatcher("(\\d{1,10},\\d{1,10}\\.?\\d{0,10},.{1}\\d{1,10}\\.?\\d{0,10})", line);
 
             if (packageItemsStr != null) {
 
                 for (String packageItems : packageItemsStr) {
 
-                    PackageItem packageItem = new PackageItem();
                     String[] packageItemsDetails = packageItems.split(",");
 
-                    if (packageItemsDetails[0] == null || packageItemsDetails[1] == null || packageItemsDetails[2] == null) {
-                        logger.error("Invalid item: " + packageItems);
+                    Integer itemIndex = Integer.valueOf(packageItemsDetails[0] != null ? packageItemsDetails[0] : "-1");
+                    BigDecimal itemWeight = new BigDecimal(packageItemsDetails[1] != null ? packageItemsDetails[1] : "-1");
+                    BigDecimal itemCost = new BigDecimal(packageItemsDetails[2] != null ? packageItemsDetails[2].replaceAll("^\\D{1}", "") : "-1");
+
+                    if (itemIndex == -1 || itemWeight.compareTo(new BigDecimal("-1")) == 0 || itemCost.compareTo(new BigDecimal("-1")) == 0) {
+
+                        throw new APIException("Invalid item: " + packageItemsDetails);
+
+                    } if (itemWeight.compareTo(new BigDecimal("100")) == 1) {
+
+                        throw new APIException("Invalid weight item: " + itemWeight + " at line [" + line + "]");
+
+                    } if (itemCost.compareTo(new BigDecimal("100")) == 1) {
+
+                        throw new APIException("Invalid cost item: " + itemCost + " at line [" + line + "]");
+
                     } else {
-                        packageItem.setIndex(Integer.valueOf(packageItemsDetails[0]));
-                        packageItem.setWeight(new BigDecimal(packageItemsDetails[1]));
-                        packageItem.setCost(new BigDecimal(packageItemsDetails[2].replaceAll("[^\\d]*", "")));
+
+                        PackageItem packageItem = new PackageItem();
+                        packageItem.setIndex(itemIndex);
+                        packageItem.setWeight(itemWeight);
+                        packageItem.setCost(itemCost);
                         aPackage.getItems().add(packageItem);
                     }
                 }
                 return aPackage;
             }
         } else {
-            logger.error("Invalid Weight Limit: " + line);
+            throw new APIException("Invalid weight limit data: " + " at line [" + line + "]");
         }
         return null;
     };
@@ -87,8 +141,15 @@ public class PackerService implements IPackerService {
         List<String> matches = new ArrayList<>();
         Pattern pattern = Pattern.compile(regex);
         Matcher matcher = pattern.matcher(value);
+        int matchCounter = 0;
 
         while (matcher.find()) {
+
+            matchCounter++;
+
+            if (matchCounter > 15){
+                throw new APIException("Number of package items exceeded: " + matchCounter);
+            }
             matches.add(matcher.group());
         }
         return matches;
